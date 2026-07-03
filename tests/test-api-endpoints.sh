@@ -121,6 +121,14 @@ test_endpoint "GET" "/api/v2/post/xvlad/sh-20260703t042512" "Get a single post b
 
 test_endpoint "GET" "/api/v2/post/skatehive/this-permlink-does-not-exist-zzz" "Single post 404 (nonexistent permlink)"
 
+echo -e "${GREEN}🔔 V2 NOTIFICATIONS ENDPOINT${NC}"
+echo "============================"
+
+# V2 Notifications (bridge.account_notifications + last-read scan; per-item isRead + unread)
+test_endpoint "GET" "/api/v2/notifications/web3warrior" "Get user notifications with read status"
+
+test_endpoint "GET" "/api/v2/notifications/web3warrior?limit=10" "Get notifications with limit"
+
 echo -e "${GREEN}💰 V2 WALLET ENDPOINTS${NC}"
 echo "======================"
 
