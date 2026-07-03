@@ -121,6 +121,12 @@ test_endpoint "GET" "/api/v2/post/xvlad/sh-20260703t042512" "Get a single post b
 
 test_endpoint "GET" "/api/v2/post/skatehive/this-permlink-does-not-exist-zzz" "Single post 404 (nonexistent permlink)"
 
+echo -e "${GREEN}⛓️  V2 CHAIN ENDPOINT${NC}"
+echo "===================="
+
+# V2 Chain globals (HAFSQL-first DGPO + dhive reward fund/median for HP & vote-value math)
+test_endpoint "GET" "/api/v2/chain/globals" "Get chain-wide globals (global props, reward fund, median price)"
+
 echo -e "${GREEN}💰 V2 WALLET ENDPOINTS${NC}"
 echo "======================"
 
