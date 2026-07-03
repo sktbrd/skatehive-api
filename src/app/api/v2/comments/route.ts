@@ -71,23 +71,26 @@ export async function GET(request: NextRequest) {
       LEFT JOIN operation_effective_comment_vote_view v 
         ON c.author = v.author 
         AND c.permlink = v.permlink
-      WHERE c.parent_author = '${parent_author}'
-      AND c.parent_permlink = '${parent_permlink}'
+      WHERE c.parent_author = @pa
+      AND c.parent_permlink = @pp
       AND c.deleted = false
-      GROUP BY 
+      GROUP BY
         c.id,
-        c.title, 
-        c.body, 
-        c.author, 
-        c.permlink, 
-        c.parent_author, 
+        c.title,
+        c.body,
+        c.author,
+        c.permlink,
+        c.parent_author,
         c.parent_permlink,
         c.created,
         c.json_metadata,
         c.pending_payout_value,
         a.reputation
       ORDER BY c.created DESC
-    `);
+    `, [
+      { name: 'pa', value: parent_author },
+      { name: 'pp', value: parent_permlink },
+    ]);
 
     if (!rows || rows.length === 0) {
       return NextResponse.json(
