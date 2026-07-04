@@ -46,7 +46,8 @@ async function fetchVideoPostsBatch(
         json_agg(
           json_build_object(
             'voter', v.voter,
-            'weight', v.weight
+            'weight', v.weight,
+            'rshares', v.rshares
           )
         ) FILTER (WHERE v.id IS NOT NULL),
         '[]'
