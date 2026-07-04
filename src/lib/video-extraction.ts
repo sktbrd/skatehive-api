@@ -9,7 +9,7 @@ export interface VideoEntry {
   payout: string;
   replies: number;
   tags: string[];
-  active_votes: { voter: string; weight: number }[];
+  active_votes: { voter: string; weight: number; rshares?: number }[];
 }
 
 interface ExtractedMedia {
@@ -267,11 +267,11 @@ export function extractVideosFromPost(post: any): VideoEntry[] {
   const thumbnailUrl = extractThumbnail(metadata, media);
 
   // Normalize votes to slim { voter, weight } array
-  let activeVotes: { voter: string; weight: number }[] = [];
+  let activeVotes: { voter: string; weight: number; rshares?: number }[] = [];
   if (Array.isArray(post.votes)) {
     activeVotes = post.votes
       .filter((v: any) => v && v.voter)
-      .map((v: any) => ({ voter: v.voter, weight: Number(v.weight) }));
+      .map((v: any) => ({ voter: v.voter, weight: Number(v.weight), rshares: Number(v.rshares || 0) }));
   }
 
   const netVotes = activeVotes.filter(v => v.weight > 0).length;
