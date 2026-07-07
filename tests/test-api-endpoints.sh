@@ -112,6 +112,21 @@ test_endpoint "GET" "/api/v2/feed/web3warrior?username=web3warrior" "Get user-sp
 
 test_endpoint "GET" "/api/v2/feed/trending" "Get trending posts feed"
 
+echo -e "${GREEN}📄 V2 POST ENDPOINT${NC}"
+echo "===================="
+
+# V2 Single Post Endpoint (edge-cached; HAFSQL + soft-post de-alias, shape matches feed items)
+# Sample author/permlink — update if it returns 404 (content may age out of queries).
+test_endpoint "GET" "/api/v2/post/xvlad/sh-20260703t042512" "Get a single post by author/permlink"
+
+test_endpoint "GET" "/api/v2/post/skatehive/this-permlink-does-not-exist-zzz" "Single post 404 (nonexistent permlink)"
+
+echo -e "${GREEN}⛓️  V2 CHAIN ENDPOINT${NC}"
+echo "===================="
+
+# V2 Chain globals (HAFSQL-first DGPO + dhive reward fund/median for HP & vote-value math)
+test_endpoint "GET" "/api/v2/chain/globals" "Get chain-wide globals (global props, reward fund, median price)"
+
 echo -e "${GREEN}💰 V2 WALLET ENDPOINTS${NC}"
 echo "======================"
 
