@@ -71,23 +71,47 @@ export async function GET(request: NextRequest) {
       LEFT JOIN operation_effective_comment_vote_view v 
         ON c.author = v.author 
         AND c.permlink = v.permlink
-      WHERE c.parent_author = '${parent_author}'
-      AND c.parent_permlink = '${parent_permlink}'
+      WHERE c.parent_author = @pa
+      AND c.parent_permlink = @pp
       AND c.deleted = false
-      GROUP BY 
+      GROUP BY
         c.id,
-        c.title, 
-        c.body, 
-        c.author, 
-        c.permlink, 
-        c.parent_author, 
+        c.title,
+        c.body,
+        c.author,
+        c.permlink,
+        c.parent_author,
         c.parent_permlink,
         c.created,
+        c.last_edited,
+        c.cashout_time,
+        c.remaining_till_cashout,
+        c.last_payout,
+        c.tags,
+        c.category,
         c.json_metadata,
+        c.root_author,
+        c.root_permlink,
         c.pending_payout_value,
+        c.author_rewards,
+        c.author_rewards_in_hive,
+        c.total_payout_value,
+        c.curator_payout_value,
+        c.beneficiary_payout_value,
+        c.total_rshares,
+        c.net_rshares,
+        c.total_vote_weight,
+        c.beneficiaries,
+        c.max_accepted_payout,
+        c.percent_hbd,
+        c.allow_votes,
+        c.allow_curation_rewards,
         a.reputation
       ORDER BY c.created DESC
-    `);
+    `, [
+      { name: 'pa', value: parent_author },
+      { name: 'pp', value: parent_permlink },
+    ]);
 
     if (!rows || rows.length === 0) {
       return NextResponse.json(
