@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
     "recompute:leaderboard": "tsx scripts/recompute-leaderboard.ts"
   },
   "dependencies": {
@@ -43,6 +44,8 @@
     "eslint-config-next": "15.1.9",
     "eslint-plugin-next": "^0.0.0",
     "tsx": "^4.22.4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.11"
   }
 }
