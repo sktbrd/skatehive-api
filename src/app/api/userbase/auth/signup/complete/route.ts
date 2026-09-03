@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
   }
   if (existsOnChain) {
     return NextResponse.json(
-      { success: false, error: "That Hive username is already taken" },
+      { success: false, error: "That Hive username is already taken", code: "hive_taken" },
       { status: 409 }
     );
   }
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
     .limit(1);
   if (handleTaken?.[0]) {
     return NextResponse.json(
-      { success: false, error: "That username is already in use" },
+      { success: false, error: "That username is already in use", code: "userbase_taken" },
       { status: 409 }
     );
   }
@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
     // above and this insert (TOCTOU). The DB constraint is the source of truth.
     if ((userErr as { code?: string } | null)?.code === "23505") {
       return NextResponse.json(
-        { success: false, error: "That username is already in use" },
+        { success: false, error: "That username is already in use", code: "userbase_taken" },
         { status: 409 }
       );
     }
