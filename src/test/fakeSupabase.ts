@@ -1,9 +1,11 @@
 // Minimal stand-in for the @supabase/supabase-js query builder, used to unit
-// test userbase routes without touching the (production-only) Supabase
+// test routes/resolvers without touching the (production-only) Supabase
 // project. Each `.from(table)` call is answered from a per-table queue of
 // canned results, consumed in call order; the last queued result repeats if
 // the queue runs out. Every builder call resolves via `.then`, so both
 // `await x.insert(...)` and `await x.insert(...).select().single()` work.
+// Every call (table + method + args) is also recorded in `calls` so tests can
+// assert on what was written, not just what was read.
 
 export type FakeResult = { data: any; error: any };
 export type FakeCall = { table: string; method: string; args: any[] };
