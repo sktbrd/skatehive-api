@@ -33,6 +33,28 @@ export function encryptSecret(plaintext: string): string {
   });
 }
 
+/**
+ * Encrypts a Hive posting key for a specific user (per-user derived key, NOT
+ * the global secret encryptSecret uses) — mirrors the web app's
+ * encryptHivePostingKey so a key claimed here decrypts the same way
+ * resolveSigner/decryptHivePostingKey expect on both sides.
+ */
+export function encryptHivePostingKey(
+  postingKey: string,
+  userId: string
+): { encryptedKey: string; iv: string; authTag: string } {
+  const key = deriveHiveKeyEncryptionKey(userId);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(postingKey, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return {
+    encryptedKey: encrypted.toString("base64"),
+    iv: iv.toString("base64"),
+    authTag: authTag.toString("base64"),
+  };
+}
+
 export function decryptSecret(payload: string) {
   let parsed: { iv: string; tag: string; data: string };
   try {

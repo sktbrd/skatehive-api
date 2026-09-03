@@ -14,8 +14,15 @@ export function isRateLimited(key: string, limit: number, windowMs: number): boo
   return w.count >= limit;
 }
 
+function purgeExpired(now: number): void {
+  for (const [key, w] of store) {
+    if (now > w.resetAt) store.delete(key);
+  }
+}
+
 export function recordAttempt(key: string, windowMs: number): void {
   const now = Date.now();
+  purgeExpired(now); // keep the map bounded — it otherwise only ever grows
   const w = store.get(key);
   if (!w || now > w.resetAt) {
     store.set(key, { count: 1, resetAt: now + windowMs });
@@ -24,8 +31,9 @@ export function recordAttempt(key: string, windowMs: number): void {
   }
 }
 
+// x-real-ip is the single header Vercel itself sets to the connecting
+// client's address. x-forwarded-for is client-suppliable (a caller can send
+// any value as its first hop) so it isn't trustworthy as a rate-limit key.
 export function getClientIp(req: Request): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim();
   return req.headers.get("x-real-ip") || "unknown";
 }

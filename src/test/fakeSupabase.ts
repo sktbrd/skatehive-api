@@ -6,9 +6,11 @@
 // `await x.insert(...)` and `await x.insert(...).select().single()` work.
 
 export type FakeResult = { data: any; error: any };
+export type FakeCall = { table: string; method: string; args: any[] };
 
 export function makeFakeSupabase(responses: Record<string, FakeResult[]>) {
   const callIndex: Record<string, number> = {};
+  const calls: FakeCall[] = [];
 
   function from(table: string) {
     const i = callIndex[table] ?? 0;
@@ -16,20 +18,23 @@ export function makeFakeSupabase(responses: Record<string, FakeResult[]>) {
     const queue = responses[table] || [];
     const result: FakeResult = queue[i] ?? queue[queue.length - 1] ?? { data: null, error: null };
 
+    const record = (method: string, args: any[]) => calls.push({ table, method, args });
+
     const builder: any = {
-      select: () => builder,
-      eq: () => builder,
-      order: () => builder,
-      limit: () => Promise.resolve(result),
-      insert: () => builder,
-      upsert: () => Promise.resolve(result),
-      update: () => builder,
-      single: () => Promise.resolve(result),
+      select: (...a: any[]) => { record("select", a); return builder; },
+      eq: (...a: any[]) => { record("eq", a); return builder; },
+      order: (...a: any[]) => { record("order", a); return builder; },
+      limit: (...a: any[]) => { record("limit", a); return Promise.resolve(result); },
+      insert: (...a: any[]) => { record("insert", a); return builder; },
+      upsert: (...a: any[]) => { record("upsert", a); return Promise.resolve(result); },
+      update: (...a: any[]) => { record("update", a); return builder; },
+      delete: (...a: any[]) => { record("delete", a); return builder; },
+      single: () => { record("single", []); return Promise.resolve(result); },
       then: (onFulfilled: any, onRejected: any) =>
         Promise.resolve(result).then(onFulfilled, onRejected),
     };
     return builder;
   }
 
-  return { from, callCounts: callIndex };
+  return { from, callCounts: callIndex, calls };
 }

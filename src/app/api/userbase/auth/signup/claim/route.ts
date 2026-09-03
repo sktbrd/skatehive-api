@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PrivateKey } from "@hiveio/dhive";
-import { verifySignupToken } from "@/lib/userbase/signupToken";
+import {
+  verifySignupToken,
+  isSignupTokenConsumed,
+  markSignupTokenConsumed,
+} from "@/lib/userbase/signupToken";
 import { validateHiveUsernameFormat } from "@/lib/userbase/hiveAccount";
 import { fetchAccountInfo } from "@/app/utils/hive/hiveUtils";
-import { encryptSecret } from "@/lib/userbase/encryption";
+import { encryptHivePostingKey } from "@/lib/userbase/encryption";
 import { createSession, getUserPublic } from "@/lib/userbase/session";
 import { isRateLimited, recordAttempt, getClientIp } from "@/lib/userbase/rateLimit";
 import { supabaseAdmin } from "@/app/utils/supabase/supabaseClient";
@@ -37,7 +41,7 @@ function fail(
 export async function POST(req: NextRequest) {
   if (!supabaseAdmin) {
     return NextResponse.json(
-      { success: false, error: "Userbase backend not configured" },
+      { success: false, error: "Userbase backend not configured", code: "server_error" },
       { status: 500 }
     );
   }
@@ -53,7 +57,7 @@ export async function POST(req: NextRequest) {
   const postingKeyRaw = String(body?.postingKey || "").trim();
 
   const verified = verifySignupToken(signupToken);
-  if (!verified) {
+  if (!verified || isSignupTokenConsumed(signupToken)) {
     return fail(401, "expired_token", "Signup session expired — request a new code", { ip });
   }
   const email = verified.email;
@@ -83,31 +87,22 @@ export async function POST(req: NextRequest) {
   if (!account) {
     return fail(400, "invalid_key", "That key doesn't match @" + handle, { ip, email });
   }
-  const postingKeys = (account.posting?.key_auths || []).map((entry) => String(entry[0]));
-  if (!postingKeys.includes(publicKey)) {
+
+  // Honour weight_threshold, not just key membership: a single key only
+  // proves posting authority if its own weight clears the threshold (we
+  // never have more than one key to combine).
+  const posting = account.posting;
+  const weightThreshold = Number(posting?.weight_threshold ?? 1);
+  const matchedWeight = (posting?.key_auths || [])
+    .filter((entry) => String(entry[0]) === publicKey)
+    .reduce((sum, entry) => sum + Number(entry[1]), 0);
+  if (matchedWeight < weightThreshold) {
     return fail(400, "invalid_key", "That key doesn't match @" + handle, { ip, email });
   }
 
-  const { data: boundElsewhere } = await supabaseAdmin
-    .from("userbase_auth_methods")
-    .select("user_id")
-    .eq("type", "email_magic")
-    .eq("identifier", email)
-    .limit(1);
-  if (boundElsewhere?.[0]) {
-    return fail(409, "merge_required", "This email is already used by another SkateHive account", {
-      ip,
-      email,
-    });
-  }
-
-  const encData = JSON.parse(encryptSecret(postingKeyRaw)) as {
-    iv: string;
-    tag: string;
-    data: string;
-  };
-  const now = new Date().toISOString();
-
+  // Identity lookup/creation happens BEFORE the email-binding check below, so
+  // that check can be scoped to "bound to a DIFFERENT user" instead of "bound
+  // to anyone" — we need to know which user_id this claim would land on first.
   const { data: existingIdentity } = await supabaseAdmin
     .from("userbase_identities")
     .select("id, user_id")
@@ -131,33 +126,79 @@ export async function POST(req: NextRequest) {
       .select("id")
       .single();
     if (userErr || !createdUser) {
+      if ((userErr as { code?: string } | null)?.code === "23505") {
+        return fail(409, "userbase_taken", "That username is already in use", { ip, email });
+      }
       console.error("[signup/claim] user insert failed", userErr);
       return fail(500, "server_error", "Could not create the account", { ip, email });
     }
-    userId = createdUser.id;
+    const newUserId = createdUser.id;
 
     const { error: identityErr } = await supabaseAdmin.from("userbase_identities").insert({
-      user_id: userId,
+      user_id: newUserId,
       type: "hive",
       handle,
       is_primary: true,
-      created_at: now,
+      created_at: new Date().toISOString(),
     });
     if (identityErr) {
-      console.error("[signup/claim] identity insert failed", identityErr);
-      return fail(500, "server_error", "Could not link the Hive account", { ip, email });
+      // Not atomic (no cross-table transaction from this app-level flow — see
+      // the claim_hive_account_fn.sql migration for the atomic alternative,
+      // not yet applied), so we compensate here instead of leaving an orphan
+      // userbase_users row that would block this handle forever.
+      if ((identityErr as { code?: string }).code === "23505") {
+        // A concurrent claim won the identity race. Adopt its user_id and
+        // clean up the user row we speculatively created.
+        await supabaseAdmin.from("userbase_users").delete().eq("id", newUserId);
+        const { data: raceIdentity } = await supabaseAdmin
+          .from("userbase_identities")
+          .select("id, user_id")
+          .eq("type", "hive")
+          .eq("handle", handle)
+          .limit(1);
+        if (!raceIdentity?.[0]) {
+          console.error("[signup/claim] identity insert 23505 but re-lookup found nothing", identityErr);
+          return fail(500, "server_error", "Could not link the Hive account", { ip, email });
+        }
+        userId = raceIdentity[0].user_id;
+      } else {
+        await supabaseAdmin.from("userbase_users").delete().eq("id", newUserId);
+        console.error("[signup/claim] identity insert failed", identityErr);
+        return fail(500, "server_error", "Could not link the Hive account", { ip, email });
+      }
+    } else {
+      userId = newUserId;
     }
   }
+
+  const { data: boundElsewhere } = await supabaseAdmin
+    .from("userbase_auth_methods")
+    .select("user_id")
+    .eq("type", "email_magic")
+    .eq("identifier", email)
+    .limit(1);
+  if (boundElsewhere?.[0] && boundElsewhere[0].user_id !== userId) {
+    return fail(409, "merge_required", "This email is already used by another SkateHive account", {
+      ip,
+      email,
+    });
+  }
+  const alreadyBoundToThisUser = Boolean(boundElsewhere?.[0] && boundElsewhere[0].user_id === userId);
+
+  const encData = encryptHivePostingKey(postingKeyRaw, userId);
+  const now = new Date().toISOString();
 
   const { error: keyErr } = await supabaseAdmin.from("userbase_hive_keys").upsert(
     {
       user_id: userId,
       hive_username: handle,
-      encrypted_posting_key: encData.data,
+      encrypted_posting_key: encData.encryptedKey,
       encryption_iv: encData.iv,
-      encryption_auth_tag: encData.tag,
+      encryption_auth_tag: encData.authTag,
       key_type: "user_provided",
-      created_at: now,
+      // created_at intentionally omitted — an existing row's created_at must
+      // not be clobbered on re-claim/re-submit; the DB default only applies
+      // on first insert.
       updated_at: now,
     },
     { onConflict: "user_id" }
@@ -167,28 +208,39 @@ export async function POST(req: NextRequest) {
     return fail(500, "server_error", "Could not store the posting key", { ip, email });
   }
 
-  const { error: amErr } = await supabaseAdmin.from("userbase_auth_methods").insert({
-    user_id: userId,
-    type: "email_magic",
-    identifier: email,
-    created_at: now,
-  });
-  if (amErr) {
-    if ((amErr as { code?: string }).code === "23505") {
-      return fail(409, "merge_required", "This email is already used by another SkateHive account", {
-        ip,
-        email,
-      });
+  if (!alreadyBoundToThisUser) {
+    const { error: amErr } = await supabaseAdmin.from("userbase_auth_methods").insert({
+      user_id: userId,
+      type: "email_magic",
+      identifier: email,
+      created_at: now,
+    });
+    if (amErr) {
+      if ((amErr as { code?: string }).code === "23505") {
+        return fail(409, "merge_required", "This email is already used by another SkateHive account", {
+          ip,
+          email,
+        });
+      }
+      console.error("[signup/claim] auth method insert failed", amErr);
+      return fail(500, "server_error", "Could not link the email to the account", { ip, email });
     }
-    console.error("[signup/claim] auth method insert failed", amErr);
-    return fail(500, "server_error", "Could not link the email to the account", { ip, email });
   }
 
-  const { token, expiresAt } = await createSession(userId, req.headers.get("user-agent"));
+  let session: { token: string; expiresAt: string };
+  try {
+    session = await createSession(userId, req.headers.get("user-agent"));
+  } catch (err) {
+    console.error("[signup/claim] session creation failed", err);
+    return fail(500, "server_error", "Could not create a session", { ip, email });
+  }
+
+  markSignupTokenConsumed(signupToken);
+
   return NextResponse.json({
     success: true,
-    token,
-    expires_at: expiresAt,
+    token: session.token,
+    expires_at: session.expiresAt,
     user: await getUserPublic(userId),
   });
 }
