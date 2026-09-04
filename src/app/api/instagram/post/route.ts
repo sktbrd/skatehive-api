@@ -14,6 +14,7 @@ import {
   getOrCreateHiveUserId,
 } from "@/lib/instagram/signatureAuth";
 import { resolveUserbaseUserId, getPrimaryHiveHandle } from "@/lib/userbase/session";
+import { isAllowedInstagramMediaUrl, mediaIsFetchable } from "@/lib/instagram/mediaValidation";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // Reels can poll up to ~3 min before publish
@@ -23,33 +24,6 @@ const MIN_HIVE_POWER_TO_CROSSPOST = 100;
 
 function isCollaboratorVisibilityError(error: string | undefined) {
   return /user not visible|collaborator|invite/i.test(error || "");
-}
-
-/**
- * Verify Meta will actually be able to fetch the media before we ask it to.
- * IPFS gateways sometimes serve a not-yet-/never-pinned CID as a non-media 4xx,
- * which Meta surfaces as the opaque "Media could not be fetched" (2207077).
- * HEAD-probe the URL (a few times, to ride out genuine propagation lag) and
- * require a 2xx image/* or video/* response. Returns true if reachable.
- */
-async function mediaIsFetchable(url: string): Promise<boolean> {
-  // FAIL-OPEN: only return false on a CONFIRMED non-media 4xx (the broken-CID
-  // case). On network errors/timeouts/5xx we proceed and let Meta try, so we
-  // never falsely block a real publish if our own egress can't reach the gateway.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    let status = 0;
-    try {
-      const res = await fetch(url, { method: "HEAD", redirect: "follow" });
-      const type = (res.headers.get("content-type") || "").toLowerCase();
-      if (res.ok && (type.startsWith("video/") || type.startsWith("image/"))) return true;
-      status = res.status;
-    } catch {
-      return true; // can't probe — don't block; let Meta be the judge
-    }
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 4000));
-    else if (status >= 400 && status < 500) return false; // gateway says the CID isn't valid
-  }
-  return true;
 }
 
 // Cross-post a Hive snap to the shared @skatehive Instagram account.
@@ -152,10 +126,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Instagram cross-posts require an image_url or video_url." }, { status: 400 });
   }
   for (const url of [imageUrl, videoUrl].filter(Boolean)) {
-    try {
-      const u = new URL(url);
-      if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("bad protocol");
-    } catch {
+    if (!isAllowedInstagramMediaUrl(url)) {
       return NextResponse.json({ error: `Unsupported media URL: ${url}` }, { status: 400 });
     }
   }
