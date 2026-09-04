@@ -19,6 +19,15 @@ export const TRANSCODE_SERVICES = [
   }
 ];
 
+// Spotmap admin images (thumbnail_small for spot photos hosted off the Hive
+// CDN): the transcoder's POST /image-thumbnail endpoint, guarded by the same
+// shared secret as the video-thumbnail work (THUMBNAIL_SHARED_SECRET) — if
+// feat/video-thumbnails adds this same constant first, reconcile rather than
+// duplicating the env var.
+export const IMAGE_THUMBNAIL_SERVICE_URL =
+  process.env.IMAGE_THUMBNAIL_SERVICE_URL || 'https://minivlad.tail83ea3e.ts.net/video/image-thumbnail';
+export const THUMBNAIL_SHARED_SECRET = process.env.THUMBNAIL_SHARED_SECRET || '';
+
 export interface ServiceConfig {
   priority: number;
   name: string;
