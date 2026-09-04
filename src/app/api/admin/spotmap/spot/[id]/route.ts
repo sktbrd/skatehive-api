@@ -1,9 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/app/utils/supabase/supabaseClient";
 import { requireSpotmapAdmin } from "@/lib/spotmap-admin";
-import { resolveSmallThumbnail } from "@/lib/spotmap-thumbnails";
+import { isAllowedThumbnailSourceHost, resolveSmallThumbnail } from "@/lib/spotmap-thumbnails";
 
 export const runtime = "nodejs";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_NAME_LENGTH = 200;
+const MAX_DESCRIPTION_LENGTH = 5000;
+const MAX_THUMBNAIL_URL_LENGTH = 2048;
+
+// Same message for every admin-check failure that isn't "no session at all"
+// — don't let the response distinguish "authenticated but no linked Hive
+// identity" from "linked but not on the allow-list", which would leak setup
+// details to someone probing for admin access.
+const FORBIDDEN_MESSAGE = "Admin access required";
 
 // Admin edit for one spotmap_spots row: replace the display image
 // (thumbnail_override — the sync jobs never touch this column, so it
@@ -25,13 +36,22 @@ export async function PATCH(
 
   const admin = await requireSpotmapAdmin(request);
   if (!admin.ok) {
-    const status = admin.hiveUsername ? 403 : 401;
-    return NextResponse.json({ success: false, error: admin.reason || "Unauthorized" }, { status });
+    // 401 only for "not authenticated at all"; everything past that (no
+    // linked Hive identity, not on the allow-list) is 403 with the SAME
+    // generic message — an authenticated non-admin shouldn't learn which
+    // specific check they failed.
+    if (admin.reason === "No session") {
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+    }
+    return NextResponse.json({ success: false, error: FORBIDDEN_MESSAGE }, { status: 403 });
   }
 
   const { id } = await params;
-  const body = await request.json().catch(() => null);
+  if (!UUID_RE.test(id)) {
+    return NextResponse.json({ success: false, error: "Invalid spot id" }, { status: 400 });
+  }
 
+  const body = await request.json().catch(() => null);
   const updates: Record<string, string | null> = {};
 
   if (body?.name !== undefined) {
@@ -39,13 +59,41 @@ export async function PATCH(
     if (!name) {
       return NextResponse.json({ success: false, error: "name cannot be empty" }, { status: 400 });
     }
+    if (name.length > MAX_NAME_LENGTH) {
+      return NextResponse.json({ success: false, error: `name must be ${MAX_NAME_LENGTH} characters or fewer` }, { status: 400 });
+    }
     updates.name = name;
   }
+
   if (body?.description !== undefined) {
-    updates.description = body.description ? String(body.description).trim() : null;
+    const description = body.description ? String(body.description).trim() : null;
+    if (description && description.length > MAX_DESCRIPTION_LENGTH) {
+      return NextResponse.json(
+        { success: false, error: `description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer` },
+        { status: 400 }
+      );
+    }
+    updates.description = description;
   }
+
   if (body?.thumbnail_override !== undefined) {
-    updates.thumbnail_override = body.thumbnail_override ? String(body.thumbnail_override).trim() : null;
+    if (body.thumbnail_override === null || body.thumbnail_override === "") {
+      updates.thumbnail_override = null;
+    } else {
+      const url = String(body.thumbnail_override).trim();
+      if (url.length > MAX_THUMBNAIL_URL_LENGTH || !isAllowedThumbnailSourceHost(url)) {
+        return NextResponse.json(
+          { success: false, error: "thumbnail_override must be an https URL on the allowed image hosts" },
+          { status: 400 }
+        );
+      }
+      updates.thumbnail_override = url;
+    }
+    // A changed (or cleared) override invalidates whatever's cached — never
+    // serve a stale small image while regeneration runs, and GET's own
+    // lazy-generation path picks this row back up if regeneration below
+    // doesn't resolve synchronously (the transcoder path).
+    updates.thumbnail_small = null;
   }
 
   if (Object.keys(updates).length === 0) {

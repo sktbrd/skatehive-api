@@ -16,6 +16,10 @@ import { IMAGE_THUMBNAIL_SERVICE_URL, THUMBNAIL_SHARED_SECRET } from "@/app/api/
 
 const HIVE_CDN_ORIGINS = ["images.hive.blog", "files.peakd.com"];
 const CDN_PX = 400;
+// Already a sized (/300x300/...) or proxied (/p/...) images.hive.blog path —
+// wrapping it again would double-resize (or just be pointless) instead of
+// resizing the original source.
+const ALREADY_SIZED_PATH = /^\/(\d+x\d+|p)\//;
 
 /** Pure: build a resized images.hive.blog URL, or null if the source isn't Hive-hosted. */
 export function buildHiveCdnThumb(url: string, px: number): string | null {
@@ -25,8 +29,37 @@ export function buildHiveCdnThumb(url: string, px: number): string | null {
   } catch {
     return null;
   }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   if (!HIVE_CDN_ORIGINS.includes(parsed.hostname)) return null;
+  if (ALREADY_SIZED_PATH.test(parsed.pathname)) return null;
   return `https://images.hive.blog/${px}x${px}/${url}`;
+}
+
+// Hosts the transcoder's POST /image-thumbnail is allowed to fetch from —
+// mirrors IMAGE_THUMBNAIL_ALLOWED_HOSTS on the transcoder itself (an SSRF
+// allow-list: reject everything else before ever making a network call, on
+// both sides of that call). Same env var name, same default list, so the
+// two only need to be kept in sync by setting one value in both places.
+// To extend: add the host to IMAGE_THUMBNAIL_ALLOWED_HOSTS in both this
+// service's env AND the transcoder's env (comma-separated), not just one.
+const IMAGE_THUMBNAIL_ALLOWED_HOSTS = (
+  process.env.IMAGE_THUMBNAIL_ALLOWED_HOSTS ||
+  "images.hive.blog,files.peakd.com,mymaps.usercontent.google.com,lh3.googleusercontent.com,ipfs.skatehive.app"
+)
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
+/** Pure: true if url is https and its hostname is on the shared allow-list. */
+export function isAllowedThumbnailSourceHost(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  return IMAGE_THUMBNAIL_ALLOWED_HOSTS.includes(parsed.hostname.toLowerCase());
 }
 
 export interface SpotmapSpotForThumbnail {
@@ -73,12 +106,24 @@ async function requestImageThumbnail(sourceUrl: string): Promise<string | null> 
   }
 }
 
-// Fire-and-forget: dedupes in-flight requests per spot, caps retries, and
-// backs off between them. Never awaited by the caller — the transcoder job
-// can take up to a minute.
+// Dedupe/attempt tracking is keyed by spot id + source URL, not just spot
+// id: if an admin edits thumbnail_override, that's a different source and
+// should get its own fresh attempt budget, not inherit whatever backoff/cap
+// state the old source left behind.
+function trackingKey(spotId: string, sourceUrl: string): string {
+  return `${spotId}::${sourceUrl}`;
+}
+
+// Fire-and-forget: dedupes in-flight requests per (spot, source), caps
+// retries, and backs off between them. Never awaited by the caller — the
+// transcoder job can take up to a minute. No-ops entirely (never even
+// touches the network) for a source whose host isn't on the allow-list.
 function queueTranscoderJob(spotId: string, sourceUrl: string): void {
-  if (inFlight.has(spotId)) return;
-  const tracked = attemptTracker.get(spotId);
+  if (!isAllowedThumbnailSourceHost(sourceUrl)) return;
+
+  const key = trackingKey(spotId, sourceUrl);
+  if (inFlight.has(key)) return;
+  const tracked = attemptTracker.get(key);
   const attempts = tracked?.attempts ?? 0;
   if (attempts >= MAX_ATTEMPTS) return;
   if (tracked) {
@@ -86,15 +131,15 @@ function queueTranscoderJob(spotId: string, sourceUrl: string): void {
     if (Date.now() - tracked.lastAttemptAt < backoff) return;
   }
 
-  inFlight.add(spotId);
-  attemptTracker.set(spotId, { attempts: attempts + 1, lastAttemptAt: Date.now() });
+  inFlight.add(key);
+  attemptTracker.set(key, { attempts: attempts + 1, lastAttemptAt: Date.now() });
 
   requestImageThumbnail(sourceUrl)
     .then((url) => {
       if (url) return persistThumbnailSmall(spotId, url);
     })
     .catch((err) => console.error("[spotmap-thumbnails] job failed", spotId, err))
-    .finally(() => inFlight.delete(spotId));
+    .finally(() => inFlight.delete(key));
 }
 
 /**
@@ -116,9 +161,12 @@ export async function backfillSpotThumbnail(
     return { status: "ready", thumbnailUrl: cdn };
   }
 
-  const tracked = attemptTracker.get(spot.id);
+  if (!isAllowedThumbnailSourceHost(source)) return { status: "skipped" };
+
+  const key = trackingKey(spot.id, source);
+  const tracked = attemptTracker.get(key);
   if ((tracked?.attempts ?? 0) >= MAX_ATTEMPTS) return { status: "skipped" };
-  attemptTracker.set(spot.id, { attempts: (tracked?.attempts ?? 0) + 1, lastAttemptAt: Date.now() });
+  attemptTracker.set(key, { attempts: (tracked?.attempts ?? 0) + 1, lastAttemptAt: Date.now() });
 
   const url = await requestImageThumbnail(source);
   if (!url) return { status: "failed" };

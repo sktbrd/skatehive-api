@@ -41,6 +41,44 @@ describe("buildHiveCdnThumb", () => {
     const { buildHiveCdnThumb } = await import("./spotmap-thumbnails");
     expect(buildHiveCdnThumb("not a url", 400)).toBeNull();
   });
+
+  it("returns null for a non-http(s) protocol even on a Hive hostname", async () => {
+    const { buildHiveCdnThumb } = await import("./spotmap-thumbnails");
+    expect(buildHiveCdnThumb("javascript:alert(1)//images.hive.blog/x.jpg", 400)).toBeNull();
+    expect(buildHiveCdnThumb("ftp://images.hive.blog/x.jpg", 400)).toBeNull();
+  });
+
+  it("does not double-wrap a URL that's already a sized/proxied images.hive.blog path", async () => {
+    const { buildHiveCdnThumb } = await import("./spotmap-thumbnails");
+    expect(buildHiveCdnThumb("https://images.hive.blog/300x300/https://images.hive.blog/DQm/x.jpg", 400)).toBeNull();
+    expect(buildHiveCdnThumb("https://images.hive.blog/p/abc123?width=300", 400)).toBeNull();
+  });
+});
+
+describe("isAllowedThumbnailSourceHost", () => {
+  it("allows the default hosts over https", async () => {
+    const { isAllowedThumbnailSourceHost } = await import("./spotmap-thumbnails");
+    expect(isAllowedThumbnailSourceHost("https://mymaps.usercontent.google.com/photo.jpg")).toBe(true);
+    expect(isAllowedThumbnailSourceHost("https://lh3.googleusercontent.com/photo.jpg")).toBe(true);
+    expect(isAllowedThumbnailSourceHost("https://ipfs.skatehive.app/ipfs/abc")).toBe(true);
+    expect(isAllowedThumbnailSourceHost("https://images.hive.blog/x.jpg")).toBe(true);
+    expect(isAllowedThumbnailSourceHost("https://files.peakd.com/x.jpg")).toBe(true);
+  });
+
+  it("rejects http even for an otherwise-allowed host", async () => {
+    const { isAllowedThumbnailSourceHost } = await import("./spotmap-thumbnails");
+    expect(isAllowedThumbnailSourceHost("http://images.hive.blog/x.jpg")).toBe(false);
+  });
+
+  it("rejects a host not on the allow-list", async () => {
+    const { isAllowedThumbnailSourceHost } = await import("./spotmap-thumbnails");
+    expect(isAllowedThumbnailSourceHost("https://evil.example.com/x.jpg")).toBe(false);
+  });
+
+  it("rejects a garbage URL instead of throwing", async () => {
+    const { isAllowedThumbnailSourceHost } = await import("./spotmap-thumbnails");
+    expect(isAllowedThumbnailSourceHost("not a url")).toBe(false);
+  });
 });
 
 describe("resolveSmallThumbnail", () => {
@@ -105,14 +143,14 @@ describe("resolveSmallThumbnail", () => {
       fetchImpl: async (url: string, init: any) => {
         expect(url).toBe("https://transcoder.test/image-thumbnail");
         expect(init.headers["x-thumbnail-secret"]).toBe("test-thumbnail-secret");
-        expect(JSON.parse(init.body)).toEqual({ url: "https://example.com/photo.jpg", maxPx: 400 });
+        expect(JSON.parse(init.body)).toEqual({ url: "https://mymaps.usercontent.google.com/photo.jpg", maxPx: 400 });
         return { ok: true, json: async () => ({ url: "https://gateway.pinata.cloud/ipfs/abc.jpg" }) };
       },
     });
 
     const result = await resolveSmallThumbnail({
       id: "spot-2",
-      thumbnail: "https://example.com/photo.jpg",
+      thumbnail: "https://mymaps.usercontent.google.com/photo.jpg",
       thumbnail_override: null,
       thumbnail_small: null,
     });
@@ -136,7 +174,7 @@ describe("resolveSmallThumbnail", () => {
       },
     });
 
-    const spot = { id: "spot-3", thumbnail: "https://example.com/photo.jpg", thumbnail_override: null, thumbnail_small: null };
+    const spot = { id: "spot-3", thumbnail: "https://mymaps.usercontent.google.com/photo.jpg", thumbnail_override: null, thumbnail_small: null };
     await Promise.all([resolveSmallThumbnail(spot), resolveSmallThumbnail(spot)]);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -149,7 +187,7 @@ describe("resolveSmallThumbnail", () => {
       fetchImpl: async () => ({ ok: false }),
     });
 
-    const base = { thumbnail: "https://example.com/photo.jpg", thumbnail_override: null, thumbnail_small: null };
+    const base = { thumbnail: "https://mymaps.usercontent.google.com/photo.jpg", thumbnail_override: null, thumbnail_small: null };
     for (let i = 0; i < 3; i++) {
       await resolveSmallThumbnail({ id: "spot-4", ...base });
       await vi.advanceTimersByTimeAsync(0);
@@ -169,8 +207,56 @@ describe("resolveSmallThumbnail", () => {
     });
 
     await expect(
-      resolveSmallThumbnail({ id: "spot-5", thumbnail: "https://example.com/x.jpg", thumbnail_override: null, thumbnail_small: null })
+      resolveSmallThumbnail({ id: "spot-5", thumbnail: "https://mymaps.usercontent.google.com/x.jpg", thumbnail_override: null, thumbnail_small: null })
     ).resolves.toBeNull();
+  });
+
+  it("never calls the transcoder for a host not on the allow-list", async () => {
+    const { resolveSmallThumbnail, fetchSpy } = await loadModule({
+      supabase: { spotmap_spots: [{ data: null, error: null }] },
+    });
+
+    const result = await resolveSmallThumbnail({
+      id: "spot-7",
+      thumbnail: "https://evil.example.com/photo.jpg",
+      thumbnail_override: null,
+      thumbnail_small: null,
+    });
+
+    expect(result).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keys the attempt tracker by spot id + source URL, so a changed override resets the retry cap", async () => {
+    vi.useFakeTimers();
+    const { resolveSmallThumbnail, fetchSpy } = await loadModule({
+      supabase: { spotmap_spots: [{ data: null, error: null }] },
+      fetchImpl: async () => ({ ok: false }),
+    });
+
+    // Exhaust the cap for one source on this spot.
+    for (let i = 0; i < 3; i++) {
+      await resolveSmallThumbnail({
+        id: "spot-8",
+        thumbnail: "https://mymaps.usercontent.google.com/old.jpg",
+        thumbnail_override: null,
+        thumbnail_small: null,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    // Same spot, different source (e.g. admin edited the override) — not capped.
+    await resolveSmallThumbnail({
+      id: "spot-8",
+      thumbnail: "https://mymaps.usercontent.google.com/new.jpg",
+      thumbnail_override: null,
+      thumbnail_small: null,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
   });
 
   it("returns null without any lookup when the spot has no thumbnail at all", async () => {
@@ -215,7 +301,7 @@ describe("backfillSpotThumbnail", () => {
 
     const result = await backfillSpotThumbnail({
       id: "spot-2",
-      thumbnail: "https://example.com/photo.jpg",
+      thumbnail: "https://mymaps.usercontent.google.com/photo.jpg",
       thumbnail_override: null,
       thumbnail_small: null,
     });
@@ -232,7 +318,7 @@ describe("backfillSpotThumbnail", () => {
 
     const result = await backfillSpotThumbnail({
       id: "spot-3",
-      thumbnail: "https://example.com/photo.jpg",
+      thumbnail: "https://mymaps.usercontent.google.com/photo.jpg",
       thumbnail_override: null,
       thumbnail_small: null,
     });

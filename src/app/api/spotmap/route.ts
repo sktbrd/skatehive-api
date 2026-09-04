@@ -1,6 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { supabaseAdmin } from "@/app/utils/supabase/supabaseClient";
 import { resolveSmallThumbnail } from "@/lib/spotmap-thumbnails";
+
+// Cap how many rows one GET can kick off generation for. The backfill script
+// is the primary way a large batch of missing thumbnails gets filled in —
+// this is just enough to make a few new/edited spots show up without a
+// separate backfill run, not a substitute for one.
+const MAX_LAZY_GENERATIONS_PER_REQUEST = 5;
+const HTTP_URL_RE = /^https?:\/\//i;
 
 interface SpotRow {
   id: string;
@@ -62,18 +69,26 @@ export async function GET() {
     };
   });
 
-  // Lazily (never awaited — resolveSmallThumbnail itself never throws)
-  // queue generation for rows the DB doesn't have a small thumbnail for yet,
-  // so a later request serves the cached version instead of the fallback.
-  for (const row of rows) {
-    if (!row.thumbnail_small) {
-      void resolveSmallThumbnail({
-        id: row.id,
-        thumbnail: row.thumbnail,
-        thumbnail_override: row.thumbnail_override,
-        thumbnail_small: row.thumbnail_small,
-      });
-    }
+  // Lazily queue generation for a bounded number of rows the DB doesn't have
+  // a small thumbnail for yet, so a few new/edited spots show up without
+  // waiting for a backfill run. Wrapped in Next's after() so this can't
+  // block (or, on Vercel, get frozen mid-flight behind) the response —
+  // resolveSmallThumbnail itself also never throws, so this can't fail the
+  // request either way.
+  const toQueue = rows
+    .filter((row) => !row.thumbnail_small && HTTP_URL_RE.test(row.thumbnail_override || row.thumbnail || ""))
+    .slice(0, MAX_LAZY_GENERATIONS_PER_REQUEST);
+  if (toQueue.length > 0) {
+    after(() => {
+      for (const row of toQueue) {
+        void resolveSmallThumbnail({
+          id: row.id,
+          thumbnail: row.thumbnail,
+          thumbnail_override: row.thumbnail_override,
+          thumbnail_small: row.thumbnail_small,
+        });
+      }
+    });
   }
 
   return NextResponse.json(
