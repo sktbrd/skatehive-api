@@ -18,104 +18,13 @@ interface ExtractedMedia {
 }
 
 // ============================================================================
-// IPFS / Pinata thumbnail lookup
+// IPFS hash extraction
 // ============================================================================
 
 /** Extract the CID from an IPFS gateway URL */
 export function extractIPFSHash(url: string): string | null {
   const match = url.match(/\/ipfs\/([a-zA-Z0-9]+)/);
   return match ? match[1] : null;
-}
-
-// Long-lived cache for Pinata metadata (thumbnails rarely change)
-const thumbnailCache = new Map<string, { url: string | null; timestamp: number }>();
-const THUMBNAIL_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-
-/**
- * Fetch thumbnail URL from Pinata metadata for a single IPFS hash.
- * Uses PINATA_API_KEY + PINATA_SECRET_API_KEY (legacy API auth).
- */
-async function fetchThumbnailFromPinata(hash: string): Promise<string | null> {
-  const apiKey = process.env.PINATA_API_KEY;
-  const apiSecret = process.env.PINATA_SECRET_API_KEY;
-  if (!apiKey || !apiSecret) return null;
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const res = await fetch(`https://api.pinata.cloud/data/pinList?hashContains=${hash}&status=pinned`, {
-      headers: {
-        pinata_api_key: apiKey,
-        pinata_secret_api_key: apiSecret,
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const file = data.rows?.find((f: any) => f.ipfs_pin_hash === hash);
-    return file?.metadata?.keyvalues?.thumbnailUrl || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Batch-resolve thumbnail URLs for a list of video entries.
- * Hits Pinata only for IPFS videos that don't already have a thumbnail.
- * Runs lookups concurrently (max 6 at a time) with caching.
- */
-export async function enrichThumbnails(videos: VideoEntry[]): Promise<VideoEntry[]> {
-  // Collect unique hashes that need lookup
-  const hashToIndices = new Map<string, number[]>();
-
-  videos.forEach((v, i) => {
-    if (v.thumbnailUrl) return; // already has one from json_metadata/body
-    const hash = extractIPFSHash(v.videoUrl);
-    if (!hash) return;
-
-    // Check cache first
-    const cached = thumbnailCache.get(hash);
-    if (cached && Date.now() - cached.timestamp < THUMBNAIL_CACHE_TTL) {
-      videos[i] = { ...v, thumbnailUrl: cached.url };
-      return;
-    }
-
-    const indices = hashToIndices.get(hash) || [];
-    indices.push(i);
-    hashToIndices.set(hash, indices);
-  });
-
-  if (hashToIndices.size === 0) return videos;
-
-  // Fetch in batches of 6 to avoid overwhelming Pinata
-  const hashes = Array.from(hashToIndices.keys());
-  const BATCH = 6;
-
-  for (let i = 0; i < hashes.length; i += BATCH) {
-    const batch = hashes.slice(i, i + BATCH);
-    const results = await Promise.allSettled(
-      batch.map(async (hash) => {
-        const url = await fetchThumbnailFromPinata(hash);
-        thumbnailCache.set(hash, { url, timestamp: Date.now() });
-        return { hash, url };
-      })
-    );
-
-    for (const result of results) {
-      if (result.status !== 'fulfilled') continue;
-      const { hash, url } = result.value;
-      const indices = hashToIndices.get(hash) || [];
-      for (const idx of indices) {
-        videos[idx] = { ...videos[idx], thumbnailUrl: url };
-      }
-    }
-  }
-
-  return videos;
 }
 
 /**
