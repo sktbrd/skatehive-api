@@ -20,16 +20,21 @@ export function makeFakeSupabase(responses: Record<string, FakeResult[]>) {
 
     const record = (method: string, args: any[]) => calls.push({ table, method, args });
 
+    // Every method just records the call and returns `builder` again — only
+    // `.then()` actually resolves, so any method (including the type-only
+    // `.returns<T>()`) can be the last one in a chain and still await correctly.
     const builder: any = {
       select: (...a: any[]) => { record("select", a); return builder; },
       eq: (...a: any[]) => { record("eq", a); return builder; },
       order: (...a: any[]) => { record("order", a); return builder; },
-      limit: (...a: any[]) => { record("limit", a); return Promise.resolve(result); },
+      limit: (...a: any[]) => { record("limit", a); return builder; },
       insert: (...a: any[]) => { record("insert", a); return builder; },
-      upsert: (...a: any[]) => { record("upsert", a); return Promise.resolve(result); },
+      upsert: (...a: any[]) => { record("upsert", a); return builder; },
       update: (...a: any[]) => { record("update", a); return builder; },
       delete: (...a: any[]) => { record("delete", a); return builder; },
-      single: () => { record("single", []); return Promise.resolve(result); },
+      single: () => { record("single", []); return builder; },
+      maybeSingle: () => { record("maybeSingle", []); return builder; },
+      returns: () => builder, // type-only in real supabase-js; no runtime effect
       then: (onFulfilled: any, onRejected: any) =>
         Promise.resolve(result).then(onFulfilled, onRejected),
     };

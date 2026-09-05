@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
-    "recompute:leaderboard": "tsx scripts/recompute-leaderboard.ts"
+    "recompute:leaderboard": "tsx scripts/recompute-leaderboard.ts",
+    "backfill:spot-thumbnails": "tsx scripts/backfill-spot-thumbnails.ts"
   },
   "dependencies": {
     "@hiveio/dhive": "^1.3.2",
