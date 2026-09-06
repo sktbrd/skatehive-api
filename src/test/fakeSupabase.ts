@@ -7,7 +7,7 @@
 // Every call (table + method + args) is also recorded in `calls` so tests can
 // assert on what was written, not just what was read.
 
-export type FakeResult = { data: any; error: any };
+export type FakeResult = { data: any; error: any; count?: number };
 export type FakeCall = { table: string; method: string; args: any[] };
 
 export function makeFakeSupabase(responses: Record<string, FakeResult[]>) {
@@ -28,6 +28,10 @@ export function makeFakeSupabase(responses: Record<string, FakeResult[]>) {
     const builder: any = {
       select: (...a: any[]) => { record("select", a); return builder; },
       eq: (...a: any[]) => { record("eq", a); return builder; },
+      in: (...a: any[]) => { record("in", a); return builder; },
+      gte: (...a: any[]) => { record("gte", a); return builder; },
+      lte: (...a: any[]) => { record("lte", a); return builder; },
+      lt: (...a: any[]) => { record("lt", a); return builder; },
       order: (...a: any[]) => { record("order", a); return builder; },
       limit: (...a: any[]) => { record("limit", a); return builder; },
       insert: (...a: any[]) => { record("insert", a); return builder; },
